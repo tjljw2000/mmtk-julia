@@ -30,6 +30,13 @@ impl Edge for JuliaVMEdge {
             JuliaVMEdge::Offset(e) => e.store(object),
         }
     }
+
+    fn as_address(&self) -> Address {
+        match self {
+            JuliaVMEdge::Simple(e) => e.as_address(),
+            JuliaVMEdge::Offset(e) => unsafe { Address::from_usize(e.offset) },
+        }
+    }
 }
 
 impl std::fmt::Debug for JuliaVMEdge {

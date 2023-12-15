@@ -4,6 +4,7 @@ use mmtk::memory_manager;
 use mmtk::scheduler::*;
 use mmtk::util::opaque_pointer::*;
 use mmtk::util::ObjectReference;
+use mmtk::util::Address;
 use mmtk::vm::EdgeVisitor;
 use mmtk::vm::ObjectTracerContext;
 use mmtk::vm::RootsWorkFactory;
@@ -34,7 +35,6 @@ impl Scanning<JuliaVM> for VMScanning {
 
         use crate::julia_scanning::*;
         use crate::julia_types::*;
-        use mmtk::util::Address;
 
         let ptls: &mut mmtk__jl_tls_states_t = unsafe { std::mem::transmute(mutator.mutator_tls) };
         let mut edge_buffer = EdgeBuffer { buffer: vec![] };
@@ -139,6 +139,22 @@ impl Scanning<JuliaVM> for VMScanning {
 
         // We have pushed work. No need to repeat this method.
         false
+    }
+
+    fn is_obj_array(o: ObjectReference) -> bool {
+        unsafe { crate::julia_scanning::is_obj_array( std::mem::transmute(o) ) }
+    }
+
+    fn is_val_array(o: ObjectReference) -> bool {
+        unsafe { crate::julia_scanning::is_val_array( std::mem::transmute(o) ) }
+    }
+    
+    fn get_obj_category(o: ObjectReference) -> i32 {
+        unsafe { crate::julia_scanning::get_obj_category( std::mem::transmute(o) )}
+    }
+
+    fn get_obj_array_addr(o: ObjectReference) -> Address {
+        unsafe { crate::julia_scanning::get_obj_array_addr( std::mem::transmute(o) )}
     }
 }
 

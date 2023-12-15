@@ -560,3 +560,97 @@ pub fn mmtk_jl_bt_entry_jlvalue(bt_entry: *mut mmtk_jl_bt_element_t, i: usize) -
     let entry = unsafe { (*bt_entry.add(2 + i)).__bindgen_anon_1.jlvalue };
     ObjectReference::from_raw_address(Address::from_mut_ptr(entry))
 }
+
+pub unsafe fn is_obj_array(obj: Address) -> bool {
+    let vt = mmtk_jl_typeof(obj);
+    if vt == jl_symbol_type || vt as usize == JULIA_BUFF_TAG {
+        return false;
+    }
+    vt != jl_simplevector_type && (*vt).name == jl_array_typename
+}
+
+pub unsafe fn is_val_array(obj: Address) -> bool {
+    let vt = mmtk_jl_typeof(obj);
+    if vt == jl_symbol_type || vt as usize == JULIA_BUFF_TAG {
+        return false;
+    }
+    vt == jl_simplevector_type
+}
+
+pub unsafe fn get_obj_category(obj: Address) -> i32 {
+    let category = mmtk_jl_get_category(obj);
+    match category {
+        JuliaObjectKind::SimpleVector | JuliaObjectKind::Array 
+            | JuliaObjectKind::Module | JuliaObjectKind::DataType => category as i32,
+        _ => 0,
+    }
+}
+
+// pub enum JuliaArrayHowKind {
+//     JuliaAllocBuffer,
+//     MallocAllocPointer,
+//     SharedWithOwner,
+// }
+
+#[derive(Copy, Clone)]
+pub enum JuliaObjectKind {
+    Other = 0,
+    SimpleVector = 1,
+    Array = 2,
+    // Array(JuliaArrayHowKind),
+    Module = 3,
+    DataType = 4,
+    Task = 5,
+    Buffer = 6,
+    Symbol = 7,
+    String = 8,
+}
+
+#[inline(always)]
+pub unsafe fn mmtk_jl_get_category(obj: Address) -> JuliaObjectKind {
+    let vt = mmtk_jl_typeof(obj);
+    if vt == jl_symbol_type{
+        JuliaObjectKind::Symbol
+    } else if vt as usize == JULIA_BUFF_TAG {
+        JuliaObjectKind::Buffer
+    } else if vt == jl_simplevector_type {
+        JuliaObjectKind::SimpleVector
+    } else if (*vt).name == jl_array_typename {
+        JuliaObjectKind::Array
+    } else if vt == jl_module_type {
+        JuliaObjectKind::Module
+    } else if vt == jl_task_type {
+        JuliaObjectKind::Task
+    } else if vt == jl_string_type {
+        JuliaObjectKind::Symbol
+    } else {
+        JuliaObjectKind::DataType
+    }
+}
+
+#[inline(always)]
+pub unsafe fn get_obj_array_addr(obj: Address) -> Address {
+    let vt = mmtk_jl_typeof(obj);
+    match mmtk_jl_get_category(obj) {
+        JuliaObjectKind::SimpleVector => {
+            mmtk_jl_svec_data(obj)
+        },
+        JuliaObjectKind::Array => {
+            // TODO: 
+            let array = obj.to_ptr::<mmtk_jl_array_t>();
+            Address::from_ptr((*array).data)
+        },
+        JuliaObjectKind::Module => {
+            let m = obj.to_ptr::<mmtk_jl_module_t>();
+            Address::from_mut_ptr((*m).usings.items)
+        },
+        JuliaObjectKind::DataType => {
+            //TODO: jl_weakref_type
+            if vt == jl_weakref_type {
+                return Address::zero();
+            }
+            mmtk_jl_dt_layout_ptrs((*vt).layout)
+        },
+        _ => Address::zero(),
+    }
+}
