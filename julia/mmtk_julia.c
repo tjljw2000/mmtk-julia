@@ -29,6 +29,8 @@ extern void* new_mutator_iterator(void);
 extern jl_ptls_t get_next_mutator_tls(void*);
 extern void* close_mutator_iterator(void*);
 
+extern const char *jl_typeof_str(jl_value_t *);
+
 JL_DLLEXPORT void (jl_mmtk_harness_begin)(void)
 {
     jl_ptls_t ptls = jl_current_task->ptls;
@@ -443,4 +445,5 @@ Julia_Upcalls mmtk_upcalls = (Julia_Upcalls) {
     .get_jl_gc_have_pending_finalizers = get_jl_gc_have_pending_finalizers,
     .scan_vm_specific_roots = scan_vm_specific_roots,
     .prepare_to_collect = jl_gc_prepare_to_collect,
+    .get_jl_typename = (const char * (*)(void *))jl_typeof_str,
 };

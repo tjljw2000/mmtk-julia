@@ -9,6 +9,7 @@ use mmtk::vm::edge_shape::SimpleEdge;
 use mmtk::vm::EdgeVisitor;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::ffi::CStr;
 
 const JL_MAX_TAGS: usize = 64; // from vm/julia/src/jl_exports.h
 
@@ -592,7 +593,7 @@ pub unsafe fn get_obj_category(obj: Address) -> i32 {
 //     SharedWithOwner,
 // }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub enum JuliaObjectKind {
     Other = 0,
     SimpleVector = 1,
@@ -652,5 +653,29 @@ pub unsafe fn get_obj_array_addr(obj: Address) -> Address {
             mmtk_jl_dt_layout_ptrs((*vt).layout)
         },
         _ => Address::zero(),
+    }
+}
+
+#[inline(always)]
+pub fn get_obj_typename(obj: Address) -> String {
+    unsafe {   
+        let kind = mmtk_jl_get_category(obj);
+        match kind {
+            JuliaObjectKind::Buffer => {
+                // println!("{:?}: Buffer", obj);
+                String::from("Buffer")
+            }
+            _ => {
+                // let typename = CStr::from_ptr(((*UPCALLS).get_jl_typename)(obj)).to_str().unwrap().to_string();
+                // println!("{:?}: {}, ", obj, typename);
+                // typename
+                let ptr = ((*UPCALLS).get_jl_typename)(obj);
+                if ptr.is_null() {
+                    String::from("NULL_PTR")
+                } else {
+                    CStr::from_ptr(ptr).to_str().unwrap().to_string()
+                }
+            }
+        }
     }
 }

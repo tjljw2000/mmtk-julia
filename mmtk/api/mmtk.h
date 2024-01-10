@@ -84,6 +84,7 @@ typedef struct {
     int* (*get_jl_gc_have_pending_finalizers)(void);
     void (*scan_vm_specific_roots)(RootsWorkClosure* closure);
     void (*prepare_to_collect)(void);
+    const char * (* get_jl_typename)(void* obj);
 } Julia_Upcalls;
 
 /**

@@ -156,6 +156,10 @@ impl Scanning<JuliaVM> for VMScanning {
     fn get_obj_array_addr(o: ObjectReference) -> Address {
         unsafe { crate::julia_scanning::get_obj_array_addr( std::mem::transmute(o) )}
     }
+
+    fn get_obj_typename(o: ObjectReference) -> String {
+        unsafe { crate::julia_scanning::get_obj_typename( std::mem::transmute(o) ) }
+    }
 }
 
 pub fn process_object<EV: EdgeVisitor<JuliaVMEdge>>(object: ObjectReference, closure: &mut EV) {
