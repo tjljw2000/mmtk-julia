@@ -67,6 +67,98 @@ JL_DLLEXPORT jl_value_t *jl_mmtk_gc_alloc_default(jl_ptls_t ptls, int pool_offse
     return v;
 }
 
+// alignment encoding
+#define AE_FIELD_WIDTH 3
+#define LOG_BYTES_PER_WORD 3
+// JL_DLLEXPORT const static int ae_field_width = 3;
+// JL_DLLEXPORT const static int log_bytes_per_word = 3;
+const int ae_verbose = 0;
+const int ae_max_align_words = 1 << AE_FIELD_WIDTH;
+const int ae_field_shift = 4;
+const int ae_alignment_increment = 1 << ae_field_shift;
+const uintptr_t ae_pattern_mask = (ae_max_align_words - 1) << ae_field_shift;
+
+JL_DLLEXPORT enum ae_patterns {
+    AE_FALLBACK = (1 << AE_FIELD_WIDTH) - 1, // 7
+    AE_REFARRAY = AE_FALLBACK - 1, // 6
+    AE_NOREF = 0,
+    AE_REF_1 = 1, // 16
+    AE_REF_2 = 2, // 24, 32, 40
+    AE_REF_3 = 3, // 48, 56, 64
+    AE_REF_4 = 4, // 32
+    AE_REF_5 = 5, // 16, 24
+};
+
+JL_DLLEXPORT int ae_get_pattern(jl_datatype_t *t) {
+    int bitmap = 0;
+    const jl_datatype_layout_t *layout = t->layout;
+    printf("t->layout@%p\n", (void *)layout);
+    int npointers = layout->npointers;
+    // if (layout->fielddesc_type != 1) {
+    //     printf("desc_type=%d\n", layout->fielddesc_type);
+    //     return AE_FALLBACK;
+    // }
+    uint16_t *ptr = (uint16_t *)jl_dt_layout_ptrs(layout);
+    for (int i = 0; i < npointers; i++) {
+        printf("%s@%p has value %d (%d/%u)", jl_symbol_name(t->name->name), (void *)ptr, *(ptr+i), i+1, npointers);
+    }
+    // switch (bitmap)
+    // {
+    // case 0b0: encoding = 1; break; // NoRef
+    // case 0b1110: encoding = 2; break; // [8, 16, 24, 32]
+    // case 0b1: encoding = 3; break; // [0]
+    // case 0b11111: encoding = 4; break; // [0, 8, 16, 24, 32]
+    // case 0b101111: encoding = 5; break; // [0, 8, 16, 24, 48]
+    // case 0b101110011: encoding = 6; break; // [0, 8, 32, 40, 48, 64]
+    // // case 0b111111111: encoding = 7; break // reserved for all references
+    // default: encoding=0; break; // fallback or out of range
+    // }
+    return AE_FALLBACK;
+}
+
+JL_DLLEXPORT int ae_get_code(uintptr_t t) {
+    return (t & ae_pattern_mask) >> ae_field_shift;
+}
+
+uintptr_t ae_adjust_region(uintptr_t t, int alignment, int padding_size) {
+    uintptr_t limit = t + padding_size;
+    while (ae_get_code(t) != alignment) {
+        // printf("adjusting code %d to %d @ %p\n", ae_get_code(t), alignment, t);
+        t += ae_alignment_increment;
+        if (t > limit) {
+            jl_error("jl_gc_alloc_aligned: should not reach here");
+        }
+    }
+    return t;
+}
+
+
+JL_DLLEXPORT jl_value_t *jl_mmtk_gc_alloc_aligned(jl_ptls_t ptls, int pool_offset,
+                                                    int osize, void *ty, int alignment)
+{
+    // safepoint
+    jl_gc_safepoint_(ptls);
+    jl_value_t *v;
+    if ((uintptr_t)ty != jl_buff_tag) {
+        // v needs to be 16 byte aligned, therefore v_tagged needs to be offset accordingly to consider the size of header
+        uintptr_t p_raw = (uintptr_t)mmtk_immix_alloc_fast(&ptls->mmtk_mutator, osize, 16, sizeof(jl_taggedvalue_t));
+        v = (jl_value_t *)ae_adjust_region((uintptr_t)jl_valueof(p_raw), alignment, (ae_max_align_words << ae_field_shift));
+        mmtk_immix_post_alloc_fast(&ptls->mmtk_mutator, v, osize);
+    } else {
+        // allocating an extra word to store the size of buffer objects
+        uintptr_t p_raw = (uintptr_t)mmtk_immix_alloc_fast(&ptls->mmtk_mutator, osize + sizeof(jl_taggedvalue_t), 16, 0);
+        jl_value_t* v_tagged_aligned = ((jl_value_t*)((char*)(p_raw) + sizeof(jl_taggedvalue_t)));
+        jl_value_t *v2 = jl_valueof(v_tagged_aligned);
+        v = (jl_value_t *)ae_adjust_region((uintptr_t)jl_valueof(v_tagged_aligned), alignment, (ae_max_align_words << ae_field_shift));
+        mmtk_store_obj_size_c(v2, osize + sizeof(jl_taggedvalue_t));
+        mmtk_immix_post_alloc_fast(&ptls->mmtk_mutator, v, osize + sizeof(jl_taggedvalue_t));
+    }
+    ptls->gc_num.allocd += osize;
+    ptls->gc_num.poolalloc++;
+    // printf("ptr v: %p\n", (void *) v);
+    return v;
+}
+
 JL_DLLEXPORT jl_value_t *jl_mmtk_gc_alloc_big(jl_ptls_t ptls, size_t sz)
 {
     // safepoint
