@@ -120,7 +120,7 @@ JL_DLLEXPORT int ae_get_code(uintptr_t t) {
     return (t & ae_pattern_mask) >> ae_field_shift;
 }
 
-uintptr_t ae_adjust_region(uintptr_t t, int alignment, int padding_size) {
+JL_DLLEXPORT uintptr_t ae_adjust_region(uintptr_t t, int alignment, int padding_size) {
     uintptr_t limit = t + padding_size;
     while (ae_get_code(t) != alignment) {
         // printf("adjusting code %d to %d @ %p\n", ae_get_code(t), alignment, t);

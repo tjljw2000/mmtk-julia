@@ -4,6 +4,8 @@ use crate::julia_types::*;
 use crate::object_model::mmtk_jl_array_ndims;
 use crate::JULIA_BUFF_TAG;
 use crate::UPCALLS;
+use crate::{JuliaVM, SINGLETON};
+use mmtk::util::constants::LOG_BYTES_IN_WORD;
 use mmtk::util::{Address, ObjectReference};
 use mmtk::vm::edge_shape::SimpleEdge;
 use mmtk::vm::EdgeVisitor;
@@ -53,6 +55,82 @@ pub unsafe fn mmtk_jl_to_typeof(t: Address) -> *const mmtk_jl_datatype_t {
 }
 
 const PRINT_OBJ_TYPE: bool = false;
+
+#[repr(u8)]
+#[derive(Copy, Debug, Clone, PartialEq)]
+enum AlignmentEncodingPattern {
+    AEFallback = 7,
+    AERefArray = 6,
+    AENoRef = 0,
+    AERef_0 = 1,
+    AERef_1_2_3 = 2,
+    AERef_4_5_6 = 3,
+    AERef_2 = 4,
+    AERef_0_1 = 5,
+}
+
+impl From<u8> for AlignmentEncodingPattern {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => Self::AENoRef,
+            1 => Self::AERef_0,
+            2 => Self::AERef_1_2_3,
+            3 => Self::AERef_4_5_6,
+            4 => Self::AERef_2,
+            5 => Self::AERef_0_1,
+            6 => Self::AERefArray,
+            7 => Self::AEFallback,
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl Into<u8> for AlignmentEncodingPattern {
+    fn into(self) -> u8 {
+        self as u8
+    }
+}
+
+struct AlignmentEncoding {}
+
+impl AlignmentEncoding {
+    const LOG_BYTES_IN_WORD: u32 = 3;
+    const FIELD_WIDTH: u32 = 3;
+    const MAX_ALIGN_WORDS: u32 = 1 << Self::FIELD_WIDTH;
+    // const FIELD_SHIFT: u32 = LOG_BYTES_IN_WORD as u32;
+    const FIELD_SHIFT: u32 = 4;
+    const ALIGNMENT_INCREMENT: u32 = 1 << Self::FIELD_SHIFT;
+    const KLASS_MASK: u32 = (Self::MAX_ALIGN_WORDS - 1) << Self::FIELD_SHIFT;
+    const ALIGN_CODE_NONE: i32 = -1;
+    const VERBOSE: bool = true;
+
+    // fn get_klass_code_for_region(klass: &Klass) -> AlignmentEncodingPattern {
+    //     let klass = klass as *const Klass as usize;
+    //     // println!("binding klass 0x{:x}", klass);
+    //     let align_code = ((klass & Self::KLASS_MASK as usize) >> Self::FIELD_SHIFT) as u32;
+    //     debug_assert!(
+    //         align_code >= 0 && align_code < Self::MAX_ALIGN_WORDS,
+    //         "Invalid align code"
+    //     );
+    //     let ret: AlignmentEncodingPattern = (align_code as u8).into();
+    //     let inverse: u8 = ret.into();
+    //     debug_assert!(inverse == align_code as u8);
+    //     ret
+    // }
+    
+    fn ae_get_pattern(t: usize) -> AlignmentEncodingPattern {
+        let align_code = ((t as u32 & Self::KLASS_MASK) >> Self::FIELD_SHIFT) as u32;
+        debug_assert!(
+            align_code >= 0 && align_code < Self::MAX_ALIGN_WORDS,
+            "Invalid align code"
+        );
+        let ret: AlignmentEncodingPattern = (align_code as u8).into();
+        let inverse: u8 = ret.into();
+        debug_assert!(inverse == align_code as u8);
+        ret
+    }
+
+}
 
 // This function is a rewrite of `gc_mark_outrefs()` in `gc.c`
 // INFO: *_custom() functions are acessors to bitfields that do not use bindgen generated code.
@@ -241,6 +319,14 @@ pub unsafe fn scan_julia_object<EV: EdgeVisitor<JuliaVMEdge>>(obj: Address, clos
 
         if vt == jl_weakref_type {
             return;
+        }
+
+        if !is_in_vm_space(Address::from_ptr(vt)) && AlignmentEncoding::ae_get_pattern(vt as usize) != AlignmentEncodingPattern::AEFallback {
+            println!("mmtk:obj@{}: {} - {}", 
+                obj, 
+                Address::from_ptr(vt), 
+                AlignmentEncoding::ae_get_pattern(vt as usize) as u8
+            );
         }
 
         let layout = (*vt).layout;
@@ -653,4 +739,12 @@ pub unsafe fn get_obj_array_addr(obj: Address) -> Address {
         },
         _ => Address::zero(),
     }
+}
+
+#[inline(always)]
+pub fn is_in_vm_space(obj: Address) -> bool {
+// pub fn is_in_vm_space(obj: Address) -> bool {
+    let mmtk: &mmtk::MMTK<JuliaVM> = &SINGLETON;
+    let plan = mmtk.get_plan();
+    plan.base().is_in_vm_space(ObjectReference::from_raw_address(obj))
 }
