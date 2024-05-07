@@ -78,42 +78,74 @@ const int ae_field_shift = 4;
 const int ae_alignment_increment = 1 << ae_field_shift;
 const uintptr_t ae_pattern_mask = (ae_max_align_words - 1) << ae_field_shift;
 
-JL_DLLEXPORT enum ae_patterns {
+typedef enum {
     AE_FALLBACK = (1 << AE_FIELD_WIDTH) - 1, // 7
-    AE_REFARRAY = AE_FALLBACK - 1, // 6
+    // AE_REFARRAY = AE_FALLBACK - 1, // 6
     AE_NOREF = 0,
-    AE_REF_1 = 1, // 16
-    AE_REF_2 = 2, // 24, 32, 40
-    AE_REF_3 = 3, // 48, 56, 64
-    AE_REF_4 = 4, // 32
-    AE_REF_5 = 5, // 16, 24
-};
+    AE_REF_01 = 1, // 16
+    AE_REF_12 = 2, // 24, 32, 40
+    AE_REF_01234 = 3, // 48, 56, 64
+    AE_REF_0 = 4, // 32
+    AE_REF_1234 = 5, // 16, 24
+    AE_REF_0123456 = 6,
+} AE_PATTERN;
 
 JL_DLLEXPORT int ae_get_pattern(jl_datatype_t *t) {
-    int bitmap = 0;
+    if (t->layout == NULL || t->name == jl_array_typename) 
+        return AE_FALLBACK;
+
     const jl_datatype_layout_t *layout = t->layout;
-    printf("t->layout@%p\n", (void *)layout);
-    int npointers = layout->npointers;
-    // if (layout->fielddesc_type != 1) {
-    //     printf("desc_type=%d\n", layout->fielddesc_type);
-    //     return AE_FALLBACK;
-    // }
-    uint16_t *ptr = (uint16_t *)jl_dt_layout_ptrs(layout);
-    for (int i = 0; i < npointers; i++) {
-        printf("%s@%p has value %d (%d/%u)", jl_symbol_name(t->name->name), (void *)ptr, *(ptr+i), i+1, npointers);
+    // printf("%p->layout@%p\n", (void *)t, (void *)layout);
+
+    uint32_t npointers = layout->npointers;
+    if (npointers == 0) 
+        return AE_NOREF;
+    else if (npointers > 7) 
+        return AE_FALLBACK;
+
+    uint8_t bitmap = 0;
+    uint8_t  *ptr_u8  = (uint8_t  *)jl_dt_layout_ptrs(layout);
+    uint16_t *ptr_u16 = (uint16_t *)jl_dt_layout_ptrs(layout);
+    uint32_t *ptr_u32 = (uint32_t *)jl_dt_layout_ptrs(layout);
+    switch (layout->fielddesc_type)
+    {
+    case 0:
+        for (int i = 0; i < npointers; i++) {
+            // printf("    \'%s\'@%p has value %d (%d/%u)\n", jl_symbol_name(t->name->name), (void *)ptr_u8, *(ptr_u8+i), i+1, npointers);
+            bitmap |= 1 << *(ptr_u8+i);
+        }
+        break;
+    case 1:
+        for (int i = 0; i < npointers; i++) {
+            // printf("    \'%s\'@%p has value %d (%d/%u)\n", jl_symbol_name(t->name->name), (void *)ptr_u16, *(ptr_u16+i), i+1, npointers);
+            bitmap |= 1 << *(ptr_u16+i);
+        }
+        break;
+    case 2:
+        for (int i = 0; i < npointers; i++) {
+            // printf("    \'%s\'@%p has value %d (%d/%u)\n", jl_symbol_name(t->name->name), (void *)ptr_u32, *(ptr_u32+i), i+1, npointers);
+            bitmap |= 1 << *(ptr_u32+i);
+        }
+        break;
+    default:
+        return AE_FALLBACK;
+        // printf("    undefined");
+        break;
     }
-    // switch (bitmap)
-    // {
-    // case 0b0: encoding = 1; break; // NoRef
-    // case 0b1110: encoding = 2; break; // [8, 16, 24, 32]
-    // case 0b1: encoding = 3; break; // [0]
-    // case 0b11111: encoding = 4; break; // [0, 8, 16, 24, 32]
-    // case 0b101111: encoding = 5; break; // [0, 8, 16, 24, 48]
-    // case 0b101110011: encoding = 6; break; // [0, 8, 32, 40, 48, 64]
-    // // case 0b111111111: encoding = 7; break // reserved for all references
-    // default: encoding=0; break; // fallback or out of range
-    // }
-    return AE_FALLBACK;
+    
+    AE_PATTERN pattern = AE_FALLBACK; 
+    switch (bitmap)
+    {
+    case 0b00000000: pattern = AE_NOREF; break;
+    case 0b00000011: pattern = AE_REF_01; break;
+    case 0b00000110: pattern = AE_REF_12; break;
+    case 0b00011111: pattern = AE_REF_01234; break;
+    case 0b00000001: pattern = AE_REF_0; break;
+    case 0b00011110: pattern = AE_REF_1234; break;
+    case 0b01111111: pattern = AE_REF_0123456; break;
+    }
+    // printf("%p@%p: bitmap-%u\n", (void *)t, (void *)layout, pattern);
+    return pattern;
 }
 
 JL_DLLEXPORT int ae_get_code(uintptr_t t) {

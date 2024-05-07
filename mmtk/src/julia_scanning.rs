@@ -59,27 +59,28 @@ const PRINT_OBJ_TYPE: bool = false;
 #[repr(u8)]
 #[derive(Copy, Debug, Clone, PartialEq)]
 enum AlignmentEncodingPattern {
-    AEFallback = 7,
-    AERefArray = 6,
-    AENoRef = 0,
-    AERef_0 = 1,
-    AERef_1_2_3 = 2,
-    AERef_4_5_6 = 3,
-    AERef_2 = 4,
-    AERef_0_1 = 5,
+    AeFallback = 7,
+    // AeRefArray = 6,
+    AeNoRef = 0,
+    AeRef01 = 1,
+    AeRef12 = 2,
+    AeRef01234 = 3,
+    AeRef0 = 4,
+    AeRef1234 = 5,
+    AeRef0123456 = 6,
 }
 
 impl From<u8> for AlignmentEncodingPattern {
     fn from(value: u8) -> Self {
         match value {
-            0 => Self::AENoRef,
-            1 => Self::AERef_0,
-            2 => Self::AERef_1_2_3,
-            3 => Self::AERef_4_5_6,
-            4 => Self::AERef_2,
-            5 => Self::AERef_0_1,
-            6 => Self::AERefArray,
-            7 => Self::AEFallback,
+            7 => Self::AeFallback,
+            0 => Self::AeNoRef,
+            1 => Self::AeRef01,
+            2 => Self::AeRef12,
+            3 => Self::AeRef01234,
+            4 => Self::AeRef0,
+            5 => Self::AeRef1234,
+            6 => Self::AeRef0123456,
             _ => unreachable!(),
         }
     }
@@ -117,8 +118,87 @@ impl AlignmentEncoding {
     //     debug_assert!(inverse == align_code as u8);
     //     ret
     // }
+
+    pub unsafe fn ae_get_code(obj: Address) -> AlignmentEncodingPattern {
+        use AlignmentEncodingPattern::*;
+        let t = mmtk_jl_typeof(obj);
+        if is_in_vm_space(Address::from_ptr(t)) {
+            return AeFallback;
+        }
+
+        // if !is_in_vm_space(Address::from_ptr(t)) { 
+            // if t == jl_symbol_type || t as usize == JULIA_BUFF_TAG {
+            //     println!("*{} symbol or buff, {:?}", obj, Self::ae_get_pattern(t as usize));
+            //     return AEFallback;
+            // } else if t == jl_simplevector_type {
+            //     println!("*{} simplevector, {:?}", obj, Self::ae_get_pattern(t as usize));
+            //     return AEFallback;
+            // } else if (*t).name == jl_array_typename {
+            //     println!("*{} array, {:?}", obj, Self::ae_get_pattern(t as usize));
+            //     return AEFallback;
+            // } else if t == jl_module_type {
+            //     println!("*{} module, {:?}", obj, Self::ae_get_pattern(t as usize));
+            //     return AEFallback;
+            // } else if t == jl_task_type {
+            //     println!("*{} task, {:?}", obj, Self::ae_get_pattern(t as usize));
+            //     return AEFallback;
+            // } else if t == jl_string_type {
+            //     println!("*{} string, {:?}", obj, Self::ae_get_pattern(t as usize));
+            //     return AEFallback;
+            // }
+            // println!("*{} datatype, {:?}", obj, Self::ae_get_pattern(t as usize));
+        // }
+
+        let layout = (*t).layout;
+        if (*layout).npointers == 0 {
+            return AeNoRef;
+        }
+        let mut obj_offset = mmtk_jl_dt_layout_ptrs(layout);
+        let mut bitmap : u8 = 0;
+        match (*layout).fielddesc_type_custom() {
+            0 => {
+                for i in 0..(*layout).npointers {
+                    let offset = obj_offset.shift::<u8>(i as isize).load::<u8>();
+                    if offset > 7 { return AeFallback };
+                    bitmap |= 1 << offset;
+                    // println!("{} ===obj==> {}: {}", obj, obj.shift::<Address>(offset as isize), offset);
+                }
+            },
+            1 => {
+                for i in 0..(*layout).npointers {
+                    let offset = obj_offset.shift::<u16>(i as isize).load::<u16>();
+                    if offset > 7 { return AeFallback };
+                    bitmap |= 1 << offset;
+                    // println!("{} ===obj==> {}: {}", obj, obj.shift::<Address>(offset as isize), offset);
+                }
+            },
+            2 => {
+                for i in 0..(*layout).npointers {
+                    let offset = obj_offset.shift::<u32>(i as isize).load::<u32>();
+                    if offset > 7 { return AeFallback };
+                    bitmap |= 1 << offset;
+                    // println!("{} ===obj==> {}: {}", obj, obj.shift::<Address>(offset as isize), offset);
+                }
+            },
+            _ => {
+                unimplemented!();
+            }
+        };
+        match bitmap {
+            0b00000000 => AeNoRef,
+            0b00000011 => AeRef01,
+            0b00000110 => AeRef12,
+            0b00011111 => AeRef01234,
+            0b00000001 => AeRef0,
+            0b00011110 => AeRef1234,
+            0b01111111 => AeRef0123456,
+            _ => AeFallback
+        }
+        // println!("shape@{}: {}", obj, bitmap);
+        // AEFallback
+    }
     
-    fn ae_get_pattern(t: usize) -> AlignmentEncodingPattern {
+    pub fn ae_get_pattern(t: usize) -> AlignmentEncodingPattern {
         let align_code = ((t as u32 & Self::KLASS_MASK) >> Self::FIELD_SHIFT) as u32;
         debug_assert!(
             align_code >= 0 && align_code < Self::MAX_ALIGN_WORDS,
@@ -132,10 +212,75 @@ impl AlignmentEncoding {
 
 }
 
+#[inline(always)]
+pub unsafe fn scan_julia_object<EV: EdgeVisitor<JuliaVMEdge>>(obj: Address, closure: &mut EV) {
+    // scan_julia_object_fallback(obj, closure);
+    use AlignmentEncodingPattern::*;
+
+    match mmtk_jl_get_category(obj) {
+        JuliaObjectKind::DataType => {
+            let vt = mmtk_jl_typeof(obj);
+
+            if is_in_vm_space(Address::from_ptr(vt)) {
+                scan_julia_object_fallback(obj, closure);
+            } else {
+                let pattern = AlignmentEncoding::ae_get_pattern(vt as usize);
+                match pattern {
+                    AeFallback => {
+                        scan_julia_object_fallback(obj, closure);
+                    },
+                    _ => {
+                        if pattern != AlignmentEncoding::ae_get_code(obj) {
+                            panic!("pattern: {:?}, expect {:?}", pattern, AlignmentEncoding::ae_get_code(obj));
+                        }
+                        scan_julia_object_fallback(obj, closure);
+                    }
+                }
+            }
+        },
+        _ => {
+            scan_julia_object_fallback(obj, closure);
+        }     
+    }
+
+    // match pattern {
+    //     AlignmentEncodingPattern::AEFallback => {
+    //         scan_julia_object_fallback(obj, closure);
+    //     },
+    //     AlignmentEncodingPattern::AENoRef => {
+    //         scan_julia_object_fallback(obj, closure);
+    //         // return;
+    //     },
+    //     AlignmentEncodingPattern::AeRef0 => {
+    //         scan_julia_object_fallback(obj, closure);
+            
+    //     },
+    //     AlignmentEncodingPattern::AeRef01 => {
+    //         scan_julia_object_fallback(obj, closure);
+
+    //     },
+    //     AlignmentEncodingPattern::AeRef01234 => {
+    //         scan_julia_object_fallback(obj, closure);
+
+    //     },
+    //     AlignmentEncodingPattern::AeRef0123456 => {
+    //         scan_julia_object_fallback(obj, closure);
+
+    //     },
+    //     AlignmentEncodingPattern::AeRef12 => {
+    //         scan_julia_object_fallback(obj, closure);
+
+    //     }, 
+    //     AlignmentEncodingPattern::AeRef1234 => {
+    //         scan_julia_object_fallback(obj, closure);
+    //     }
+    // }
+}
+
 // This function is a rewrite of `gc_mark_outrefs()` in `gc.c`
 // INFO: *_custom() functions are acessors to bitfields that do not use bindgen generated code.
 #[inline(always)]
-pub unsafe fn scan_julia_object<EV: EdgeVisitor<JuliaVMEdge>>(obj: Address, closure: &mut EV) {
+pub unsafe fn scan_julia_object_fallback<EV: EdgeVisitor<JuliaVMEdge>>(obj: Address, closure: &mut EV) {
     // get Julia object type
     let vt = mmtk_jl_typeof(obj);
 
@@ -321,13 +466,14 @@ pub unsafe fn scan_julia_object<EV: EdgeVisitor<JuliaVMEdge>>(obj: Address, clos
             return;
         }
 
-        if !is_in_vm_space(Address::from_ptr(vt)) && AlignmentEncoding::ae_get_pattern(vt as usize) != AlignmentEncodingPattern::AEFallback {
-            println!("mmtk:obj@{}: {} - {}", 
-                obj, 
-                Address::from_ptr(vt), 
-                AlignmentEncoding::ae_get_pattern(vt as usize) as u8
-            );
-        }
+        // if !is_in_vm_space(Address::from_ptr(vt)) 
+        //     && AlignmentEncoding::ae_get_pattern(vt as usize) != AlignmentEncodingPattern::AeFallback {
+        //     println!("mmtk:obj@{}: {} - {}", 
+        //         obj, 
+        //         Address::from_ptr(vt), 
+        //         AlignmentEncoding::ae_get_pattern(vt as usize) as u8
+        //     );
+        // }
 
         let layout = (*vt).layout;
         let npointers = (*layout).npointers;
@@ -338,6 +484,8 @@ pub unsafe fn scan_julia_object<EV: EdgeVisitor<JuliaVMEdge>>(obj: Address, clos
                 (*layout).nfields > 0 && (*layout).fielddesc_type_custom() != 3,
                 "opaque types should have been handled specially"
             );
+            // println!("={} with type {} has {} field(s)", obj, Address::from_ptr(layout), npointers);
+            // AlignmentEncoding::ae_get_code(obj);
             if (*layout).fielddesc_type_custom() == 0 {
                 let mut obj8_begin = mmtk_jl_dt_layout_ptrs(layout);
                 let obj8_end = obj8_begin.shift::<u8>(npointers as isize);

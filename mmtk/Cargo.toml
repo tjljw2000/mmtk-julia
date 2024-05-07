@@ -43,7 +43,9 @@ thread-id = "*"
 # ykstackmaps = { git = "https://github.com/udesou/ykstackmaps.git", branch = "udesou-master", version = "*" }
 
 [features]
-default = ["mmtk/vm_space", "julia_copy_stack", "mmtk/sanity"]
+default = ["mmtk/vm_space", "julia_copy_stack"]
+# default = ["mmtk/vm_space", "julia_copy_stack", "mmtk/sanity"]
+
 
 # Plans
 nogc = []
