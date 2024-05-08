@@ -5,7 +5,7 @@ use crate::object_model::mmtk_jl_array_ndims;
 use crate::JULIA_BUFF_TAG;
 use crate::UPCALLS;
 use crate::{JuliaVM, SINGLETON};
-use mmtk::util::constants::LOG_BYTES_IN_WORD;
+// use mmtk::util::constants::LOG_BYTES_IN_WORD;
 use mmtk::util::{Address, ObjectReference};
 use mmtk::vm::edge_shape::SimpleEdge;
 use mmtk::vm::EdgeVisitor;
@@ -95,29 +95,15 @@ impl Into<u8> for AlignmentEncodingPattern {
 struct AlignmentEncoding {}
 
 impl AlignmentEncoding {
-    const LOG_BYTES_IN_WORD: u32 = 3;
+    // const LOG_BYTES_IN_WORD: u32 = 3;
     const FIELD_WIDTH: u32 = 3;
     const MAX_ALIGN_WORDS: u32 = 1 << Self::FIELD_WIDTH;
     // const FIELD_SHIFT: u32 = LOG_BYTES_IN_WORD as u32;
     const FIELD_SHIFT: u32 = 4;
-    const ALIGNMENT_INCREMENT: u32 = 1 << Self::FIELD_SHIFT;
+    // const ALIGNMENT_INCREMENT: u32 = 1 << Self::FIELD_SHIFT;
     const KLASS_MASK: u32 = (Self::MAX_ALIGN_WORDS - 1) << Self::FIELD_SHIFT;
     const ALIGN_CODE_NONE: i32 = -1;
-    const VERBOSE: bool = true;
-
-    // fn get_klass_code_for_region(klass: &Klass) -> AlignmentEncodingPattern {
-    //     let klass = klass as *const Klass as usize;
-    //     // println!("binding klass 0x{:x}", klass);
-    //     let align_code = ((klass & Self::KLASS_MASK as usize) >> Self::FIELD_SHIFT) as u32;
-    //     debug_assert!(
-    //         align_code >= 0 && align_code < Self::MAX_ALIGN_WORDS,
-    //         "Invalid align code"
-    //     );
-    //     let ret: AlignmentEncodingPattern = (align_code as u8).into();
-    //     let inverse: u8 = ret.into();
-    //     debug_assert!(inverse == align_code as u8);
-    //     ret
-    // }
+    // const VERBOSE: bool = true;
 
     pub unsafe fn ae_get_code(obj: Address) -> AlignmentEncodingPattern {
         use AlignmentEncodingPattern::*;
@@ -126,34 +112,11 @@ impl AlignmentEncoding {
             return AeFallback;
         }
 
-        // if !is_in_vm_space(Address::from_ptr(t)) { 
-            // if t == jl_symbol_type || t as usize == JULIA_BUFF_TAG {
-            //     println!("*{} symbol or buff, {:?}", obj, Self::ae_get_pattern(t as usize));
-            //     return AEFallback;
-            // } else if t == jl_simplevector_type {
-            //     println!("*{} simplevector, {:?}", obj, Self::ae_get_pattern(t as usize));
-            //     return AEFallback;
-            // } else if (*t).name == jl_array_typename {
-            //     println!("*{} array, {:?}", obj, Self::ae_get_pattern(t as usize));
-            //     return AEFallback;
-            // } else if t == jl_module_type {
-            //     println!("*{} module, {:?}", obj, Self::ae_get_pattern(t as usize));
-            //     return AEFallback;
-            // } else if t == jl_task_type {
-            //     println!("*{} task, {:?}", obj, Self::ae_get_pattern(t as usize));
-            //     return AEFallback;
-            // } else if t == jl_string_type {
-            //     println!("*{} string, {:?}", obj, Self::ae_get_pattern(t as usize));
-            //     return AEFallback;
-            // }
-            // println!("*{} datatype, {:?}", obj, Self::ae_get_pattern(t as usize));
-        // }
-
         let layout = (*t).layout;
         if (*layout).npointers == 0 {
             return AeNoRef;
         }
-        let mut obj_offset = mmtk_jl_dt_layout_ptrs(layout);
+        let obj_offset = mmtk_jl_dt_layout_ptrs(layout);
         let mut bitmap : u8 = 0;
         match (*layout).fielddesc_type_custom() {
             0 => {
@@ -161,7 +124,6 @@ impl AlignmentEncoding {
                     let offset = obj_offset.shift::<u8>(i as isize).load::<u8>();
                     if offset > 7 { return AeFallback };
                     bitmap |= 1 << offset;
-                    // println!("{} ===obj==> {}: {}", obj, obj.shift::<Address>(offset as isize), offset);
                 }
             },
             1 => {
@@ -169,7 +131,6 @@ impl AlignmentEncoding {
                     let offset = obj_offset.shift::<u16>(i as isize).load::<u16>();
                     if offset > 7 { return AeFallback };
                     bitmap |= 1 << offset;
-                    // println!("{} ===obj==> {}: {}", obj, obj.shift::<Address>(offset as isize), offset);
                 }
             },
             2 => {
@@ -177,7 +138,6 @@ impl AlignmentEncoding {
                     let offset = obj_offset.shift::<u32>(i as isize).load::<u32>();
                     if offset > 7 { return AeFallback };
                     bitmap |= 1 << offset;
-                    // println!("{} ===obj==> {}: {}", obj, obj.shift::<Address>(offset as isize), offset);
                 }
             },
             _ => {
@@ -194,16 +154,10 @@ impl AlignmentEncoding {
             0b01111111 => AeRef0123456,
             _ => AeFallback
         }
-        // println!("shape@{}: {}", obj, bitmap);
-        // AEFallback
     }
     
     pub fn ae_get_pattern(t: usize) -> AlignmentEncodingPattern {
         let align_code = ((t as u32 & Self::KLASS_MASK) >> Self::FIELD_SHIFT) as u32;
-        debug_assert!(
-            align_code >= 0 && align_code < Self::MAX_ALIGN_WORDS,
-            "Invalid align code"
-        );
         let ret: AlignmentEncodingPattern = (align_code as u8).into();
         let inverse: u8 = ret.into();
         debug_assert!(inverse == align_code as u8);
@@ -212,8 +166,345 @@ impl AlignmentEncoding {
 
 }
 
+
+// This function is a rewrite of `gc_mark_outrefs()` in `gc.c`
+// INFO: *_custom() functions are acessors to bitfields that do not use bindgen generated code.
 #[inline(always)]
 pub unsafe fn scan_julia_object<EV: EdgeVisitor<JuliaVMEdge>>(obj: Address, closure: &mut EV) {
+    // get Julia object type
+    let vt = mmtk_jl_typeof(obj);
+
+    if vt == jl_symbol_type || vt as usize == JULIA_BUFF_TAG {
+        return;
+    }
+
+    // scan_julia_object_fallback(obj, closure);
+    // return;
+
+    if vt == jl_simplevector_type {
+        if PRINT_OBJ_TYPE {
+            println!("scan_julia_obj {}: simple vector\n", obj);
+        }
+        let length = mmtk_jl_svec_len(obj);
+        let mut objary_begin = mmtk_jl_svec_data(obj);
+        let objary_end = objary_begin.shift::<Address>(length as isize);
+
+        while objary_begin < objary_end {
+            process_edge(closure, objary_begin);
+            objary_begin = objary_begin.shift::<Address>(1);
+        }
+        return;
+    } else if vt == jl_module_type {
+        if PRINT_OBJ_TYPE {
+            println!("scan_julia_obj {}: module\n", obj);
+        }
+
+        let m = obj.to_ptr::<mmtk_jl_module_t>();
+
+        let parent_edge = ::std::ptr::addr_of!((*m).parent);
+        if PRINT_OBJ_TYPE {
+            println!(" - scan parent: {:?}\n", parent_edge);
+        }
+        process_edge(closure, Address::from_ptr(parent_edge));
+
+        let bindingkeyset_edge = ::std::ptr::addr_of!((*m).bindingkeyset);
+        if PRINT_OBJ_TYPE {
+            println!(" - scan bindingkeyset: {:?}\n", bindingkeyset_edge);
+        }
+        process_edge(closure, Address::from_ptr(bindingkeyset_edge));
+
+        let bindings_edge = ::std::ptr::addr_of!((*m).bindings);
+        if PRINT_OBJ_TYPE {
+            println!(" - scan bindings: {:?}\n", bindings_edge);
+        }
+        process_edge(closure, Address::from_ptr(bindings_edge));
+
+        let nusings = (*m).usings.len;
+        if nusings != 0 {
+            let mut objary_begin = Address::from_mut_ptr((*m).usings.items);
+            let objary_end = objary_begin.shift::<Address>(nusings as isize);
+
+            while objary_begin < objary_end {
+                if PRINT_OBJ_TYPE {
+                    println!(" - scan usings: {:?}\n", objary_begin);
+                }
+                process_edge(closure, objary_begin);
+                objary_begin = objary_begin.shift::<Address>(1);
+            }
+        }
+        return;
+    } else if vt == jl_task_type {
+        if PRINT_OBJ_TYPE {
+            println!("scan_julia_obj {}: task\n", obj);
+        }
+
+        let ta = obj.to_ptr::<mmtk_jl_task_t>();
+
+        mmtk_scan_gcstack(ta, closure);
+
+        let layout = (*jl_task_type).layout;
+        debug_assert!((*layout).fielddesc_type_custom() == 0);
+        debug_assert!((*layout).nfields > 0);
+        let npointers = (*layout).npointers;
+        let mut obj8_begin = mmtk_jl_dt_layout_ptrs(layout);
+        let obj8_end = obj8_begin.shift::<u8>(npointers as isize);
+
+        while obj8_begin < obj8_end {
+            let obj8_begin_loaded = obj8_begin.load::<u8>();
+            let slot = obj.shift::<Address>(obj8_begin_loaded as isize);
+            process_edge(closure, slot);
+            obj8_begin = obj8_begin.shift::<u8>(1);
+        }
+        return;
+    } else if vt == jl_string_type {
+        if PRINT_OBJ_TYPE {
+            println!("scan_julia_obj {}: string\n", obj);
+        }
+        return;
+    } else if !is_in_vm_space(Address::from_ptr(vt)) {
+    // } else if mmtk_jl_get_category(obj) == JuliaObjectKind::DataType && !is_in_vm_space(Address::from_ptr(vt)) {
+        use AlignmentEncodingPattern::*;
+
+        let pattern = AlignmentEncoding::ae_get_pattern(vt as usize);
+        match pattern {
+            AeNoRef => {
+                // println!("obj:{}/NoRef", obj);
+                return;
+            },
+            AeRef01 => {
+                // println!("obj:{}/{}", obj, obj.shift::<Address>(0));
+                // println!("obj:{}/{}", obj, obj.shift::<Address>(1));
+                process_edge(closure, obj.shift::<Address>(0));
+                process_edge(closure, obj.shift::<Address>(1));
+                return;
+            },
+            AeRef12 => {
+                // println!("obj:{}/{}", obj, obj.shift::<Address>(1));
+                // println!("obj:{}/{}", obj, obj.shift::<Address>(2));
+                process_edge(closure, obj.shift::<Address>(1));
+                process_edge(closure, obj.shift::<Address>(2));
+                return;
+            },
+            AeRef01234 => {
+                // println!("obj:{}/{}", obj, obj.shift::<Address>(0));
+                // println!("obj:{}/{}", obj, obj.shift::<Address>(1));
+                // println!("obj:{}/{}", obj, obj.shift::<Address>(2));
+                // println!("obj:{}/{}", obj, obj.shift::<Address>(3));
+                // println!("obj:{}/{}", obj, obj.shift::<Address>(4));
+                process_edge(closure, obj.shift::<Address>(0));
+                process_edge(closure, obj.shift::<Address>(1));
+                process_edge(closure, obj.shift::<Address>(2));
+                process_edge(closure, obj.shift::<Address>(3));
+                process_edge(closure, obj.shift::<Address>(4));
+                return;
+            },
+            AeRef0 => {
+                // println!("obj:{}/{}", obj, obj.shift::<Address>(0));
+                process_edge(closure, obj.shift::<Address>(0));
+                return;
+            },
+            AeRef1234 => {
+                // println!("obj:{}/{}", obj, obj.shift::<Address>(1));
+                // println!("obj:{}/{}", obj, obj.shift::<Address>(2));
+                // println!("obj:{}/{}", obj, obj.shift::<Address>(3));
+                // println!("obj:{}/{}", obj, obj.shift::<Address>(4));
+                process_edge(closure, obj.shift::<Address>(1));
+                process_edge(closure, obj.shift::<Address>(2));
+                process_edge(closure, obj.shift::<Address>(3));
+                process_edge(closure, obj.shift::<Address>(4));
+                return;
+            },
+            AeRef0123456 => {
+                // println!("obj:{}/{}", obj, obj.shift::<Address>(0));
+                // println!("obj:{}/{}", obj, obj.shift::<Address>(1));
+                // println!("obj:{}/{}", obj, obj.shift::<Address>(2));
+                // println!("obj:{}/{}", obj, obj.shift::<Address>(3));
+                // println!("obj:{}/{}", obj, obj.shift::<Address>(4));
+                // println!("obj:{}/{}", obj, obj.shift::<Address>(5));
+                // println!("obj:{}/{}", obj, obj.shift::<Address>(6));
+                process_edge(closure, obj.shift::<Address>(0));
+                process_edge(closure, obj.shift::<Address>(1));
+                process_edge(closure, obj.shift::<Address>(2));
+                process_edge(closure, obj.shift::<Address>(3));
+                process_edge(closure, obj.shift::<Address>(4));
+                process_edge(closure, obj.shift::<Address>(5));
+                process_edge(closure, obj.shift::<Address>(6));
+                return;
+            },
+            AeFallback => {
+                // continue
+                // println!("obj:{}/AeFallback", obj);
+            }
+        }
+    }
+    
+    if (*vt).name == jl_array_typename {
+        if PRINT_OBJ_TYPE {
+            println!("scan_julia_obj {}: array\n", obj);
+        }
+
+        let array = obj.to_ptr::<mmtk_jl_array_t>();
+        let flags = (*array).flags;
+
+        if flags.how_custom() == 1 {
+            // julia-allocated buffer that needs to be marked
+            let offset = (*array).offset as usize * (*array).elsize as usize;
+            let data_addr = ::std::ptr::addr_of!((*array).data);
+            process_offset_edge(closure, Address::from_ptr(data_addr), offset);
+        } else if flags.how_custom() == 2 {
+            // malloc-allocated pointer this array object manages
+            // should be processed below if it contains pointers
+        } else if flags.how_custom() == 3 {
+            // has a pointer to the object that owns the data
+            let owner_addr = mmtk_jl_array_data_owner_addr(array);
+            process_edge(closure, owner_addr);
+            return;
+        }
+
+        if (*array).data == std::ptr::null_mut() || mmtk_jl_array_len(array) == 0 {
+            return;
+        }
+
+        if flags.ptrarray_custom() != 0 {
+            if mmtk_jl_tparam0(vt) == jl_symbol_type {
+                return;
+            }
+
+            let length = mmtk_jl_array_len(array);
+
+            let mut objary_begin = Address::from_ptr((*array).data);
+            let objary_end = objary_begin.shift::<Address>(length as isize);
+
+            while objary_begin < objary_end {
+                process_edge(closure, objary_begin);
+                objary_begin = objary_begin.shift::<Address>(1);
+            }
+        } else if flags.hasptr_custom() != 0 {
+            let et = mmtk_jl_tparam0(vt);
+            let layout = (*et).layout;
+            let npointers = (*layout).npointers;
+            let elsize = (*array).elsize as usize / std::mem::size_of::<Address>();
+            let length = mmtk_jl_array_len(array);
+            let mut objary_begin = Address::from_ptr((*array).data);
+            let objary_end = objary_begin.shift::<Address>((length * elsize) as isize);
+
+            if npointers == 1 {
+                objary_begin = objary_begin.shift::<Address>((*layout).first_ptr as isize);
+                while objary_begin < objary_end {
+                    process_edge(closure, objary_begin);
+                    objary_begin = objary_begin.shift::<Address>(elsize as isize);
+                }
+            } else if (*layout).fielddesc_type_custom() == 0 {
+                let obj8_begin = mmtk_jl_dt_layout_ptrs(layout);
+                let obj8_end = obj8_begin.shift::<u8>(npointers as isize);
+                let mut elem_begin = obj8_begin;
+                let elem_end = obj8_end;
+
+                while objary_begin < objary_end {
+                    while elem_begin < elem_end {
+                        let elem_begin_loaded = elem_begin.load::<u8>();
+                        let slot = objary_begin.shift::<Address>(elem_begin_loaded as isize);
+                        process_edge(closure, slot);
+                        elem_begin = elem_begin.shift::<u8>(1);
+                    }
+                    elem_begin = obj8_begin;
+                    objary_begin = objary_begin.shift::<Address>(elsize as isize);
+                }
+            } else if (*layout).fielddesc_type_custom() == 1 {
+                let mut obj16_begin = mmtk_jl_dt_layout_ptrs(layout);
+                let obj16_end = obj16_begin.shift::<u16>(npointers as isize);
+
+                while objary_begin < objary_end {
+                    while obj16_begin < obj16_end {
+                        let elem_begin_loaded = obj16_begin.load::<u16>();
+                        let slot = objary_begin.shift::<Address>(elem_begin_loaded as isize);
+                        process_edge(closure, slot);
+                        obj16_begin = obj16_begin.shift::<u16>(1);
+                    }
+                    obj16_begin = mmtk_jl_dt_layout_ptrs(layout);
+                    objary_begin = objary_begin.shift::<Address>(elsize as isize);
+                }
+            } else {
+                unimplemented!();
+            }
+        } else {
+            return;
+        }
+    } else {
+        if PRINT_OBJ_TYPE {
+            println!("scan_julia_obj {}: datatype\n", obj);
+        }
+
+        if vt == jl_weakref_type {
+            // println!("obj:{}/WeakRef*", obj);
+            return;
+        }
+
+        // if !is_in_vm_space(Address::from_ptr(vt)) 
+        //     && AlignmentEncoding::ae_get_pattern(vt as usize) != AlignmentEncodingPattern::AeFallback {
+        //     println!("mmtk:obj@{}: {} - {}", 
+        //         obj, 
+        //         Address::from_ptr(vt), 
+        //         AlignmentEncoding::ae_get_pattern(vt as usize) as u8
+        //     );
+        // }
+
+        let layout = (*vt).layout;
+        let npointers = (*layout).npointers;
+        if npointers == 0 {
+            // println!("obj:{}/NoRef*", obj);
+            return;
+        } else {
+            debug_assert!(
+                (*layout).nfields > 0 && (*layout).fielddesc_type_custom() != 3,
+                "opaque types should have been handled specially"
+            );
+            // println!("={} with type {} has {} field(s)", obj, Address::from_ptr(layout), npointers);
+            // AlignmentEncoding::ae_get_code(obj);
+            if (*layout).fielddesc_type_custom() == 0 {
+                let mut obj8_begin = mmtk_jl_dt_layout_ptrs(layout);
+                let obj8_end = obj8_begin.shift::<u8>(npointers as isize);
+
+                while obj8_begin < obj8_end {
+                    let obj8_begin_loaded = obj8_begin.load::<u8>();
+                    let slot = obj.shift::<Address>(obj8_begin_loaded as isize);
+                    // println!("obj:{}/{}*", obj, slot);
+                    process_edge(closure, slot);
+                    obj8_begin = obj8_begin.shift::<u8>(1);
+                }
+            } else if (*layout).fielddesc_type_custom() == 1 {
+                let mut obj16_begin = mmtk_jl_dt_layout_ptrs(layout);
+                let obj16_end = obj16_begin.shift::<u16>(npointers as isize);
+
+                while obj16_begin < obj16_end {
+                    let obj16_begin_loaded = obj16_begin.load::<u16>();
+                    let slot = obj.shift::<Address>(obj16_begin_loaded as isize);
+                    // println!("obj:{}/{}*", obj, slot);
+                    process_edge(closure, slot);
+                    obj16_begin = obj16_begin.shift::<u16>(1);
+                }
+            } else if (*layout).fielddesc_type_custom() == 2 {
+                let mut obj32_begin = mmtk_jl_dt_layout_ptrs(layout);
+                let obj32_end = obj32_begin.shift::<u32>(npointers as isize);
+
+                while obj32_begin < obj32_end {
+                    let obj32_begin_loaded = obj32_begin.load::<u32>();
+                    let slot = obj.shift::<Address>(obj32_begin_loaded as isize);
+                    // println!("obj:{}/{}*", obj, slot);
+                    process_edge(closure, slot);
+                    obj32_begin = obj32_begin.shift::<u32>(1);
+                }
+            } else {
+                debug_assert!((*layout).fielddesc_type_custom() == 3);
+                unimplemented!();
+            }
+        }
+    }
+}
+
+
+#[inline(always)]
+pub unsafe fn scan_julia_object_check<EV: EdgeVisitor<JuliaVMEdge>>(obj: Address, closure: &mut EV) {
     // scan_julia_object_fallback(obj, closure);
     use AlignmentEncodingPattern::*;
 
@@ -242,39 +533,6 @@ pub unsafe fn scan_julia_object<EV: EdgeVisitor<JuliaVMEdge>>(obj: Address, clos
             scan_julia_object_fallback(obj, closure);
         }     
     }
-
-    // match pattern {
-    //     AlignmentEncodingPattern::AEFallback => {
-    //         scan_julia_object_fallback(obj, closure);
-    //     },
-    //     AlignmentEncodingPattern::AENoRef => {
-    //         scan_julia_object_fallback(obj, closure);
-    //         // return;
-    //     },
-    //     AlignmentEncodingPattern::AeRef0 => {
-    //         scan_julia_object_fallback(obj, closure);
-            
-    //     },
-    //     AlignmentEncodingPattern::AeRef01 => {
-    //         scan_julia_object_fallback(obj, closure);
-
-    //     },
-    //     AlignmentEncodingPattern::AeRef01234 => {
-    //         scan_julia_object_fallback(obj, closure);
-
-    //     },
-    //     AlignmentEncodingPattern::AeRef0123456 => {
-    //         scan_julia_object_fallback(obj, closure);
-
-    //     },
-    //     AlignmentEncodingPattern::AeRef12 => {
-    //         scan_julia_object_fallback(obj, closure);
-
-    //     }, 
-    //     AlignmentEncodingPattern::AeRef1234 => {
-    //         scan_julia_object_fallback(obj, closure);
-    //     }
-    // }
 }
 
 // This function is a rewrite of `gc_mark_outrefs()` in `gc.c`
@@ -826,7 +1084,7 @@ pub unsafe fn get_obj_category(obj: Address) -> i32 {
 //     SharedWithOwner,
 // }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq)]
 pub enum JuliaObjectKind {
     Other = 0,
     SimpleVector = 1,
