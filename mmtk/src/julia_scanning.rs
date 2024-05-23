@@ -581,7 +581,9 @@ pub unsafe fn get_obj_category(obj: Address) -> i32 {
     let category = mmtk_jl_get_category(obj);
     match category {
         JuliaObjectKind::SimpleVector | JuliaObjectKind::Array 
-            | JuliaObjectKind::Module | JuliaObjectKind::DataType => category as i32,
+            | JuliaObjectKind::Module | JuliaObjectKind::DataType
+            | JuliaObjectKind::Task | JuliaObjectKind::Buffer | JuliaObjectKind::Symbol
+            | JuliaObjectKind::String => category as i32,
         _ => 0,
     }
 }
