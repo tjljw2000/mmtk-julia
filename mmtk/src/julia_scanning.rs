@@ -261,7 +261,7 @@ pub unsafe fn scan_julia_object<EV: EdgeVisitor<JuliaVMEdge>>(obj: Address, clos
             println!("scan_julia_obj {}: string\n", obj);
         }
         return;
-    } else if !is_in_vm_space(Address::from_ptr(vt)) {
+    } else if !is_in_image(Address::from_ptr(vt)) {
     // } else if mmtk_jl_get_category(obj) == JuliaObjectKind::DataType && !is_in_vm_space(Address::from_ptr(vt)) {
         use AlignmentEncodingPattern::*;
 
@@ -1153,4 +1153,12 @@ pub fn is_in_vm_space(obj: Address) -> bool {
     let mmtk: &mmtk::MMTK<JuliaVM> = &SINGLETON;
     let plan = mmtk.get_plan();
     plan.base().is_in_vm_space(ObjectReference::from_raw_address(obj))
+}
+
+#[inline(always)]
+pub unsafe fn is_in_image(addr: Address) -> bool {
+    let as_tagged_value =
+        addr.as_usize() - std::mem::size_of::<crate::julia_scanning::mmtk_jl_taggedvalue_t>();
+    let t_header = Address::from_usize(as_tagged_value).load::<Address>();
+    (t_header.as_usize() >> 2) & 1 != 0
 }
