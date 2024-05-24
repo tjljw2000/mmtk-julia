@@ -321,13 +321,13 @@ pub unsafe fn scan_julia_object<EV: EdgeVisitor<JuliaVMEdge>>(obj: Address, clos
             return;
         }
 
-        if !is_in_vm_space(Address::from_ptr(vt)) && AlignmentEncoding::ae_get_pattern(vt as usize) != AlignmentEncodingPattern::AEFallback {
-            println!("mmtk:obj@{}: {} - {}", 
-                obj, 
-                Address::from_ptr(vt), 
-                AlignmentEncoding::ae_get_pattern(vt as usize) as u8
-            );
-        }
+        // if !is_in_vm_space(Address::from_ptr(vt)) && AlignmentEncoding::ae_get_pattern(vt as usize) != AlignmentEncodingPattern::AEFallback {
+        //     println!("mmtk:obj@{}: {} - {}", 
+        //         obj, 
+        //         Address::from_ptr(vt), 
+        //         AlignmentEncoding::ae_get_pattern(vt as usize) as u8
+        //     );
+        // }
 
         let layout = (*vt).layout;
         let npointers = (*layout).npointers;
